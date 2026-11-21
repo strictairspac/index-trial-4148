@@ -7,3 +7,6 @@ class Telemetry(Base):
  recorded_at=Column(String(30),nullable=False)
  device_type=Column(String(40),nullable=False)
  value=Column(Float,nullable=False)
+ # Precision-upgrade columns (value_exact/value_source/value_version, and after the
+ # switch value_legacy_float) are added by src/services/precision.py DDL. They are
+ # intentionally not modelled here so a fresh install starts in the legacy shape.

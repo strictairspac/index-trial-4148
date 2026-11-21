@@ -1,8 +1,17 @@
 """Controlled MySQL index trial. All dynamic identifiers are server-whitelisted."""
 import hashlib,json,time,statistics
+from decimal import Decimal
 from sqlalchemy import text
 from src.config.database import engine
-from src.constants.enums import COLUMNS
+from src.constants.enums import COLUMNS,TRIAL_LOCK
+from src.services.precision import verify_trial
+def _jsonable(rows):
+ # DECIMAL columns arrive as Decimal once the precision switch has run; keep the
+ # evidence JSON-stable and compared byte-for-byte within one version.
+ def norm(v):
+  if isinstance(v,Decimal):return format(v,'f')
+  return v
+ return [{k:norm(v) for k,v in r.items()} for r in rows]
 def prefix_score(columns,w):
  equality={'sensor_id'}|({'device_type'} if w.get('device_type') else set())
  score=0;matched=[];reason=[]
@@ -28,8 +37,9 @@ def run(snapshot):
  if w.get('device_type'):query+=' AND device_type=:device';params['device']=w['device_type']
  query+=' ORDER BY id'
  with engine.connect() as conn:
-  if conn.execute(text("SELECT GET_LOCK('index_trial_serial',30)")).scalar()!=1:raise RuntimeError('another trial holds lock')
+  if conn.execute(text('SELECT GET_LOCK(:n,30)'),{'n':TRIAL_LOCK}).scalar()!=1:raise RuntimeError('another trial holds lock')
   try:
+   precision_version=verify_trial(conn,snapshot)['version']
    existing=conn.execute(text("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='telemetry' AND index_name='trial_candidate'")).scalar()
    if existing:conn.execute(text('DROP INDEX trial_candidate ON telemetry'));conn.commit()
    before=[dict(r) for r in conn.execute(text('EXPLAIN '+query),params).mappings()]
@@ -40,8 +50,9 @@ def run(snapshot):
    after=[dict(r) for r in conn.execute(text('EXPLAIN '+query),params).mappings()]
    result,after_ms,after_samples=_timed(conn,query,params)
    write_after=_write_probe(conn)
+   rows=_jsonable(rows);result=_jsonable(result)
    canonical=lambda records:hashlib.sha256(json.dumps(records,sort_keys=True).encode()).hexdigest()
-   return {'prefix':prefix_score(columns,w),'query':query,'parameters':params,'rows':len(result),'before_plan':before,'after_plan':after,'before_median_ms':before_ms,'after_median_ms':after_ms,'before_samples_ms':before_samples,'after_samples_ms':after_samples,'insert20_before_ms':write_before,'insert20_after_ms':write_after,'equal_results':canonical(rows)==canonical(result),'checksum':canonical(result),'preview':result[:10],'limitations':['5000-row deterministic dataset; timings include Python driver and cache effects','20-row write probe is rolled back; sequence gaps are normal','heuristic prefix score is not MySQL optimizer cost; no guaranteed speedup']}
+   return {'precision_version':precision_version,'prefix':prefix_score(columns,w),'query':query,'parameters':params,'rows':len(result),'before_plan':before,'after_plan':after,'before_median_ms':before_ms,'after_median_ms':after_ms,'before_samples_ms':before_samples,'after_samples_ms':after_samples,'insert20_before_ms':write_before,'insert20_after_ms':write_after,'equal_results':canonical(rows)==canonical(result),'checksum':canonical(result),'preview':result[:10],'limitations':['5000-row deterministic dataset; timings include Python driver and cache effects','20-row write probe is rolled back; sequence gaps are normal','heuristic prefix score is not MySQL optimizer cost; no guaranteed speedup']}
   finally:
    conn.rollback()
    try:

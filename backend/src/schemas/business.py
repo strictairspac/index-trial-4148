@@ -29,3 +29,19 @@ class CandidateInput(BaseModel):
 class ExperimentInput(BaseModel):
  name:str=Field(min_length=2,max_length=120)
  candidate_id:int
+class TelemetryInput(BaseModel):
+ sensor_id:int=Field(ge=1,le=1000)
+ recorded_at:str=Field(min_length=10,max_length=30)
+ device_type:str
+ value:str|int|float
+ @model_validator(mode='after')
+ def valid(self):
+  if self.device_type not in ('pump','motor','valve'):raise ValueError('设备类型无效')
+  datetime.fromisoformat(self.recorded_at)
+  self.recorded_at=datetime.fromisoformat(self.recorded_at).isoformat(timespec='seconds')
+  return self
+class CorrectionInput(BaseModel):
+ value:str|int|float
+class BackfillInput(BaseModel):
+ batch_size:int=Field(default=500,ge=1,le=5000)
+ max_batches:int|None=Field(default=None,ge=1,le=100000)

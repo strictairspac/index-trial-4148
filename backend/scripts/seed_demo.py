@@ -5,10 +5,14 @@ from src.models.workload import Workload
 from src.models.candidate import Candidate
 from src.models.experiment import Experiment
 from src.models.telemetry import Telemetry
+from src.models.precision import PrecisionState
 from src.utils.security import hash_password
 def seed():
  Base.metadata.create_all(engine)
  with Session() as s:
+  precision=s.get(PrecisionState,1)
+  if not precision:
+   s.add(PrecisionState(id=1,phase='legacy',version=0,cursor_id=0,total_rows=0,backfilled_rows=0,reconcile_total=0,reconcile_mismatch=0,message=''));s.flush()
   for role in ('admin','operator','viewer'):
    if not s.query(User).filter_by(email=role+'@index.local').first():s.add(User(email=role+'@index.local',role=role,password=hash_password('Trial2026!')))
   workloads=[('泵站17温升排查',17,None),('电机36日班回溯',36,'motor'),('阀组59异常区间',59,'valve')]

@@ -35,6 +35,15 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 种子含三账号、三负载、三候选与 5,000 遥测行。固定公式生成，不依赖随机数。seed 根据自然键/id补缺，不覆盖用户编辑。范围错误/非法列/重复名称有错误响应，空结果仍可正常比较。
 
+## 读数精度升级（gb-4102）
+`telemetry.value` 原为 `FLOAT`，六位小数读数入库后末位漂移（`42.123456` 读回 `42.1235`）。升级目标 `DECIMAL(48,6)`，六位小数原样入库、原样回读。接口：
+
+- `POST /precision/start` → `POST /precision/backfill`（可反复调用，按 `cursor_id` 续跑）→ `POST /precision/reconcile`（逐条对账写 SHA-256）→ `POST /precision/switch`（原子 ALTER）。
+- `POST /telemetry`、`POST /telemetry/supplement`、`PUT /telemetry/{id}`、`GET /telemetry/{id}`。
+- `POST /precision/rollback`：仅当所有行都能无损转回 FLOAT 才允许，否则 409 并附 `lossy_rows` 与样例。
+
+历史读数按旧库实际读回值（FLOAT 的显示值，如 `31.7`）补足六位回填。回填期间并发补录/更正可正常确认：回填 `UPDATE` 带 `value_exact IS NULL AND value_source IS NULL` 守卫，旧值不会盖新值；游标与批次同事务提交，进程被 kill 后从游标续跑。索引试验排队时记录精度版本，worker 持锁后比对，版本不一致直接失败，保证建索引前后同一版样本；切换持有同一把试验锁，正在跑的试验会阻塞切换（409）。所有 DDL 与业务写入共用一个锁序 `precision_write_guard → precision_backfill → index_trial_serial`。
+
 ## 算法与真实边界
 Python 对索引从左到右分析，匹配相等列每列 +40，首个时间范围列 +20 后停止，最高100。缺失首列停止。启发式不等于优化器成本。worker 使用 MySQL GET_LOCK 串行隔离，删除遗留试验索引 → 无候选基线 EXPLAIN/查询5次 → 建候选索引/ANALYZE → 查询5次和EXPLAIN → 校验有序全结果SHA-256 → 清理索引。数据固定、查询参数固定可复现，耗时受缓存和驱动波动影响，不保证提速。20 行写探针是真实 INSERT 后 ROLLBACK，可能消耗 auto_increment 序列号。试验只修改专用 telemetry 表，不能接受任意SQL或远端数据库。任务使用简单 Redis 单消费者，进程崩溃后的 running 任务不自动重试，保留状态供人工复查并新建任务。
 
